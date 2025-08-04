@@ -1,15 +1,17 @@
 package org.etux.kafka.deadletter
 
+import org.apache.kafka.common.serialization.Deserializer
+import org.apache.kafka.common.serialization.Serde
 import org.apache.kafka.common.serialization.Serdes
+import org.apache.kafka.common.serialization.Serializer
 import org.apache.kafka.streams.KafkaStreams
 import org.apache.kafka.streams.StreamsBuilder
 import org.apache.kafka.streams.Topology
 import org.apache.kafka.streams.kstream.Consumed
 import org.apache.kafka.streams.kstream.KStream
-import org.apache.kafka.streams.kstream.KTable
 import org.apache.kafka.streams.kstream.Materialized
 import org.apache.kafka.streams.state.Stores
-import org.etux.kafka.deadletter.serdes.DeadLetterCommandJacksonSerde
+import org.etux.kafka.deadletter.serdes.DeadLetterJacksonSerde
 import org.etux.kafka.deadletter.serdes.DeadLetterListJacksonSerde
 import org.slf4j.LoggerFactory
 import java.util.Properties
@@ -24,35 +26,56 @@ class DeadLetterStream(
 
     private fun topology(): Topology {
         val builder = StreamsBuilder()
-        val deadLetterStream: KStream<String, DeadLetterCommand<String, String>> = builder.stream(
-            inputTopic,
-            Consumed.with(Serdes.String(), DeadLetterCommandJacksonSerde<String, String>()).withName(inputStore),
+        val deadLetterStream: KStream<String, String> = builder.stream(
+            /* topic = */ inputTopic,
+            /* consumed = */ Consumed.with(
+                /* keySerde = */ Serdes.String(),
+                /* valueSerde = */ Serdes.String(),
+            ).withName(inputStore),
         )
 
+        deadLetterStream
+            .filter { _, value ->
+                when(ExampleKafkaApplication.MessageType.valueOf(value)) {
+                    ExampleKafkaApplication.MessageType.SUCCESSFUL, ExampleKafkaApplication.MessageType.RETRY -> true
+                    else -> false
+                }
+            }
+
         // Group by key and aggregate into a list per key
-        val deadLetterTable: KTable<String, List<DeadLetterRecord<String, String>>> = deadLetterStream
+        deadLetterStream
             .peek { key, value -> logger.info("Received message. Key: $key, Value: $value") }
             .groupByKey()
             .aggregate(
-                { emptyList() },
-                { key: String, value: DeadLetterCommand<String, String>, aggregate: List<DeadLetterRecord<String, String>> ->
+                /* p0 = */ { emptyList() },
+                /* p1 = */ { key: String, value: String, aggregate: List<String> ->
                     logger.info("Adding to dead letter messages bucket $key of size ${aggregate.size} record: $value")
-                    when(value) {
-                        is PutDeadLetterCommand -> aggregate + value.deadLetter
-                        is DeleteDeadLetterCommand -> aggregate - value.deadLetter
-                        is RetryDeadLetterCommand -> aggregate
-                    }
+                    aggregate + value
                 },
-                Materialized.`as`<String, List<DeadLetterRecord<String, String>>>(Stores.inMemoryKeyValueStore(inputStore))
+                /* p2 = */ Materialized.`as`<String, List<String>>(Stores.inMemoryKeyValueStore(inputStore))
                     .withKeySerde(Serdes.String())
-                    .withValueSerde(DeadLetterListJacksonSerde(String::class.java, String::class.java)),
+                    .withValueSerde(object: Serde<List<String>> { // TODO extract serde
+                        override fun serializer() = Serializer<List<String>> { _, data ->
+                            data?.joinToString(separator = ",")?.toByteArray()
+                        }
+                        override fun deserializer() = Deserializer { _, bytes ->
+
+                            bytes?.toString(Charsets.UTF_8)?.split(",") ?: emptyList()
+                        }
+                    }),
             )
+
         return builder.build()
     }
 
     fun run() {
-        val streams = KafkaStreams(topology, properties)
+        val streams = KafkaStreams(
+            /* topology = */ topology,
+            /* props = */ properties,
+        )
+
         streams.start()
+
         Runtime
             .getRuntime()
             .addShutdownHook(Thread { streams.close() })

@@ -5,20 +5,37 @@ import org.apache.kafka.streams.StoreQueryParameters
 import org.apache.kafka.streams.Topology
 import org.apache.kafka.streams.errors.InvalidStateStoreException
 import org.apache.kafka.streams.state.QueryableStoreTypes
+import org.apache.kafka.streams.state.ReadOnlyKeyValueStore
 import org.slf4j.LoggerFactory
 import java.lang.Thread.sleep
 import java.util.Properties
 import java.util.concurrent.Executors
 
 class DeadLetterPlayer(
-    private val inputStore: String,
-    private val properties: Properties,
-    private val topology: Topology,
+    inputStore: String,
+    properties: Properties,
+    topology: Topology,
 ) {
+
+    private val streams = KafkaStreams(
+        /* topology = */ topology,
+        /* props = */ properties,
+    )
+
+    val store: ReadOnlyKeyValueStore<String, List<String>>
+
+    init {
+        streams.start()
+        store = streams.store(
+            StoreQueryParameters.fromNameAndType(
+                /* storeName = */ inputStore,
+                /* queryableStoreType = */ QueryableStoreTypes.keyValueStore()
+            )
+        )
+    }
 
     fun run() {
         logger.info("Running Dead Letter Queryer.")
-        val streams = KafkaStreams(topology, properties)
 
         Runtime.getRuntime().addShutdownHook(Thread {
             logger.info("Shutting down Kafka Streams.")
@@ -26,19 +43,11 @@ class DeadLetterPlayer(
         })
 
         logger.info("starting to poll the dead letter table.")
-        streams.start()
 
         while(streams.state() != KafkaStreams.State.RUNNING) {
             logger.debug("Waiting for streams to be running.")
             sleep(500)
         }
-
-        val store = streams.store(
-            StoreQueryParameters.fromNameAndType(
-                inputStore,
-                QueryableStoreTypes.keyValueStore<String, List<String>>()
-            )
-        )
 
         Executors
             .newSingleThreadExecutor()
@@ -49,7 +58,18 @@ class DeadLetterPlayer(
                         store
                             .all()
                             .forEach { keyValue ->
+
+
                                 keyValue.value.forEach {
+                                    when (ExampleKafkaApplication.MessageType.valueOf(it)) {
+                                        ExampleKafkaApplication.MessageType.SUCCESSFUL -> logger.error("Something is terribly wrong")
+                                        ExampleKafkaApplication.MessageType.RETRY -> {
+                                            logger.info("Message with key ${keyValue.key} should be retried.")
+                                        }
+                                        ExampleKafkaApplication.MessageType.FAIL_FOREVER -> {
+                                            logger.warn("Message with key ${keyValue.key} failed forever and will not be retried.")
+                                        }
+                                    }
                                     logger.info("Found ${keyValue.key} with records $it")
                                 }
                             }
