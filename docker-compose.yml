@@ -3,10 +3,11 @@ services:
     image: apache/kafka-native
     ports:
       - "9092:9092"
+      - "9093:9093"
     environment:
       # Configure listeners for both docker and host communication
       KAFKA_LISTENERS: CONTROLLER://localhost:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: HOST://192.168.178.143:9092,DOCKER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
 
       # Settings required for KRaft mode
@@ -21,3 +22,11 @@ services:
       # Required for a single node cluster
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       ALLOW_AUTO_CREATE_TOPICS: "true"
+
+  kafka-ui:
+    image: kafbat/kafka-ui:main
+    hostname: kafka-ui
+    ports:
+      - "8888:8080"
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
