@@ -50,7 +50,7 @@ class MyInputDeadLetterCommandSerde() : Serde<DeadLetterCommand<String, String>>
     }
 }
 
-abstract class DeadLetterCommandJacksonSerde<K, V>() : Serde<DeadLetterCommand<K,V>>{
+class DeadLetterCommandJacksonSerde<K, V>() : Serde<DeadLetterCommand<K,V>>{
     private val objectMapper = jacksonObjectMapper()
 
     override fun deserializer() = Deserializer<DeadLetterCommand<K, V>?> { topic, bytes ->

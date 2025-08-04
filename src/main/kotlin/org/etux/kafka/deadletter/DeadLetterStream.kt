@@ -9,7 +9,7 @@ import org.apache.kafka.streams.kstream.KStream
 import org.apache.kafka.streams.kstream.KTable
 import org.apache.kafka.streams.kstream.Materialized
 import org.apache.kafka.streams.state.Stores
-import org.etux.kafka.deadletter.serdes.DeadLetterJacksonSerde
+import org.etux.kafka.deadletter.serdes.DeadLetterCommandJacksonSerde
 import org.etux.kafka.deadletter.serdes.DeadLetterListJacksonSerde
 import org.slf4j.LoggerFactory
 import java.util.Properties
@@ -24,19 +24,10 @@ class DeadLetterStream(
 
     private fun topology(): Topology {
         val builder = StreamsBuilder()
-        val deadLetterStream: KStream<String, DeadLetterRecord<String, String>> = builder.stream(
+        val deadLetterStream: KStream<String, DeadLetterCommand<String, String>> = builder.stream(
             inputTopic,
-            Consumed.with(Serdes.String(), DeadLetterJacksonSerde<String, String>()).withName(inputStore),
+            Consumed.with(Serdes.String(), DeadLetterCommandJacksonSerde<String, String>()).withName(inputStore),
         )
-
-        deadLetterStream
-            .filterNot { key, value ->
-                when(ApplicationStream.MessageType.valueOf(value.value)) {
-                    ApplicationStream.MessageType.SUCCESSFUL -> false
-                    ApplicationStream.MessageType.RETRY -> false
-                    else -> true
-                }
-            }
 
         // Group by key and aggregate into a list per key
         val deadLetterTable: KTable<String, List<DeadLetterRecord<String, String>>> = deadLetterStream
@@ -44,9 +35,13 @@ class DeadLetterStream(
             .groupByKey()
             .aggregate(
                 { emptyList() },
-                { key: String, value: DeadLetterRecord<String, String>, aggregate: List<DeadLetterRecord<String, String>> ->
+                { key: String, value: DeadLetterCommand<String, String>, aggregate: List<DeadLetterRecord<String, String>> ->
                     logger.info("Adding to dead letter messages bucket $key of size ${aggregate.size} record: $value")
-                    aggregate + value
+                    when(value) {
+                        is PutDeadLetterCommand -> aggregate + value.deadLetter
+                        is DeleteDeadLetterCommand -> aggregate - value.deadLetter
+                        is RetryDeadLetterCommand -> aggregate
+                    }
                 },
                 Materialized.`as`<String, List<DeadLetterRecord<String, String>>>(Stores.inMemoryKeyValueStore(inputStore))
                     .withKeySerde(Serdes.String())
