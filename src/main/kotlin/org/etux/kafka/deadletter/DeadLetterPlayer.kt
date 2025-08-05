@@ -22,7 +22,7 @@ class DeadLetterPlayer(
         /* props = */ properties,
     )
 
-    val store: ReadOnlyKeyValueStore<String, DeadLetterMessage>
+    val store: ReadOnlyKeyValueStore<String, List<DeadLetterMessage>>
 
     init {
         streams.start()
@@ -58,6 +58,7 @@ class DeadLetterPlayer(
                         store
                             .all()
                             .forEach { keyValue ->
+                                // TODO add lambda to reference the business logic
                                 logger.info("Found $keyValue")
                             }
                         logger.info("Ran the state store queryer.")

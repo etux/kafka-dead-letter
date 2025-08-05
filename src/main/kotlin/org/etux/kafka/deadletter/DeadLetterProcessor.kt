@@ -6,20 +6,20 @@ import org.apache.kafka.streams.processor.api.ProcessorSupplier
 import org.apache.kafka.streams.processor.api.Record
 import org.apache.kafka.streams.state.KeyValueStore
 
-class DeadLetterProcessorSupplier(private val storeName: String) : ProcessorSupplier<String, String, String, DeadLetterMessage> {
-    override fun get(): Processor<String, String, String, DeadLetterMessage> {
+class DeadLetterProcessorSupplier(private val storeName: String) : ProcessorSupplier<String, String, String, List<DeadLetterMessage>> {
+    override fun get(): Processor<String, String, String, List<DeadLetterMessage>> {
         return DeadLetterProcessor(storeName)
     }
 }
 
-class DeadLetterProcessor(private val storeName: String): Processor<String, String, String, DeadLetterMessage> {
+class DeadLetterProcessor(private val storeName: String): Processor<String, String, String, List<DeadLetterMessage>> {
 
-    private lateinit var processorContext: ProcessorContext<String, DeadLetterMessage>
-    private lateinit var keyValueStore: KeyValueStore<String, DeadLetterMessage>
+    private lateinit var processorContext: ProcessorContext<String, List<DeadLetterMessage>>
+    private lateinit var keyValueStore: KeyValueStore<String, List<DeadLetterMessage>>
 
-    override fun init(context: ProcessorContext<String, DeadLetterMessage>?) {
+    override fun init(context: ProcessorContext<String, List<DeadLetterMessage>>?) {
         this.processorContext = context ?: throw IllegalArgumentException("ProcessorContext cannot be null")
-        this.keyValueStore = context.getStateStore(storeName) as KeyValueStore<String, DeadLetterMessage>
+        this.keyValueStore = context.getStateStore(storeName) as KeyValueStore<String, List<DeadLetterMessage>>
     }
 
     override fun process(record: Record<String, String>) {
@@ -38,41 +38,48 @@ class DeadLetterProcessor(private val storeName: String): Processor<String, Stri
             ?.toString(Charsets.UTF_8)
             ?.toIntOrNull()
 
-        val existingValues = keyValueStore.get(key)
+        val uniqueMessageId = headers.lastHeader("unique-message-id")
+            ?.value()
+            ?.toString(Charsets.UTF_8)
+            ?: throw IllegalArgumentException("Header 'unique-message-id' is missing")
+
+        val deadLetteredMessagesForKey = keyValueStore.get(key)
 
         val newValue = when (operation) {
             DeadLetterCommandType.PUT -> {
-                when (existingValues) {
-                    null -> DeadLetterMessage(
-                        retryCount = retryCount ?: 0,
-                        messages = listOf(value),
-                    )
-                    else -> DeadLetterMessage(
-                        retryCount = existingValues.retryCount + (retryCount ?: 0),
-                        messages = existingValues.messages + value,
+                when (deadLetteredMessagesForKey) {
+                    null -> listOf(DeadLetterMessage(
+                        retryCount = 0,
+                        uniqueMessageId = uniqueMessageId,
+                        message = value,
+                    ))
+                    else -> deadLetteredMessagesForKey + DeadLetterMessage(
+                        retryCount = 0,
+                        uniqueMessageId = uniqueMessageId,
+                        message = value,
                     )
 
                 }
             }
 
             DeadLetterCommandType.DELETE -> {
-                when (existingValues) {
+                when (deadLetteredMessagesForKey) {
                     null -> throw IllegalStateException("Key $key does not exist in the store.")
-                    else -> DeadLetterMessage(
-                        retryCount = 0,
-                        messages = existingValues.messages.filterNot { it == value })
+                    else -> deadLetteredMessagesForKey.filterNot { it.uniqueMessageId == uniqueMessageId }
 
                 }
             }
 
             DeadLetterCommandType.RETRY -> {
-                when (existingValues) {
+                when (deadLetteredMessagesForKey) {
                     null -> throw IllegalStateException("Key $key does not exist in the store.")
-                    else -> DeadLetterMessage(
-
-                            retryCount = existingValues.retryCount + 1,
-                            messages = existingValues.messages
-                        )
+                    else -> deadLetteredMessagesForKey.map {
+                        if (it.uniqueMessageId == uniqueMessageId) {
+                            it.copy(retryCount = (it.retryCount + 1))
+                        } else {
+                            it
+                        }
+                    }
                 }
             }
         }
@@ -83,5 +90,6 @@ class DeadLetterProcessor(private val storeName: String): Processor<String, Stri
 
 data class DeadLetterMessage(
     val retryCount: Int,
-    val messages: List<String>,
+    val uniqueMessageId: String,
+    val message: String, // ByteArray
 )
