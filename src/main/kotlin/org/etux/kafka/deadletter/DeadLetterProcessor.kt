@@ -66,6 +66,11 @@ class DeadLetterProcessor(private val storeName: String): Processor<String, Stri
                         .also {
                             if (it.isEmpty()) {
                                 keyValueStore.delete(key)
+                            } else {
+                                keyValueStore.put(
+                                    /* key = */ key,
+                                    /* value = */ it,
+                                )
                             }
                         }
                 }
