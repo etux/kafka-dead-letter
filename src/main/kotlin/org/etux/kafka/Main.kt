@@ -1,8 +1,7 @@
-package org.etux
+package org.etux.kafka
 
 import org.apache.kafka.common.serialization.Serdes
 import org.apache.kafka.streams.StreamsConfig
-import org.etux.kafka.deadletter.ExampleKafkaApplication
 import org.etux.kafka.deadletter.DeadLetterAdmin
 import org.etux.kafka.deadletter.DeadLetterPlayer
 import org.etux.kafka.deadletter.DeadLetterStream

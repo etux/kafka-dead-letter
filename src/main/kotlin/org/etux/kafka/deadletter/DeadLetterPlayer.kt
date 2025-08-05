@@ -22,7 +22,7 @@ class DeadLetterPlayer(
         /* props = */ properties,
     )
 
-    val store: ReadOnlyKeyValueStore<String, List<String>>
+    val store: ReadOnlyKeyValueStore<String, DeadLetterMessage>
 
     init {
         streams.start()
@@ -58,20 +58,7 @@ class DeadLetterPlayer(
                         store
                             .all()
                             .forEach { keyValue ->
-
-
-                                keyValue.value.forEach {
-                                    when (ExampleKafkaApplication.MessageType.valueOf(it)) {
-                                        ExampleKafkaApplication.MessageType.SUCCESSFUL -> logger.error("Something is terribly wrong")
-                                        ExampleKafkaApplication.MessageType.RETRY -> {
-                                            logger.info("Message with key ${keyValue.key} should be retried.")
-                                        }
-                                        ExampleKafkaApplication.MessageType.FAIL_FOREVER -> {
-                                            logger.warn("Message with key ${keyValue.key} failed forever and will not be retried.")
-                                        }
-                                    }
-                                    logger.info("Found ${keyValue.key} with records $it")
-                                }
+                                logger.info("Found $keyValue")
                             }
                         logger.info("Ran the state store queryer.")
                         sleep(5000)

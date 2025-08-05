@@ -1,4 +1,4 @@
-package org.etux.kafka.deadletter
+package org.etux.kafka
 
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.consumer.KafkaConsumer
@@ -8,6 +8,8 @@ import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.serialization.StringSerializer
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore
+import org.etux.kafka.deadletter.DeadLetterCommandType
+import org.etux.kafka.deadletter.DeadLetterMessage
 import org.slf4j.LoggerFactory
 import java.lang.Thread.sleep
 import java.time.Duration
@@ -19,24 +21,8 @@ class ExampleKafkaApplication(
     private val inputTopic: String,
     private val deadLetterTopic: String,
     private val bootstrapServer: String,
-    private val store: ReadOnlyKeyValueStore<String, List<String>>,
+    private val store: ReadOnlyKeyValueStore<String, DeadLetterMessage>,
 ) {
-    enum class MessageType {
-        SUCCESSFUL,
-        RETRY,
-        FAIL_FOREVER,
-    }
-
-    private val producerProperties: Properties by lazy {
-        Properties().apply {
-            put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
-            put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer::class.java.name)
-            put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer::class.java.name)
-            put(ProducerConfig.ACKS_CONFIG, "all")
-        }
-    }
-    private val producer: KafkaProducer<String, String> = KafkaProducer(producerProperties)
-
     private val deadLetterProducerProperties: Properties by lazy {
         Properties().apply {
             put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
@@ -62,42 +48,8 @@ class ExampleKafkaApplication(
         logger.info("Starting application.")
         Executors
             .newFixedThreadPool(3)
-            .also {
-                it.submit(::setProducerUp)
-                it.submit(::setConsumerUp)
-            }
+            .submit(::setConsumerUp)
     }
-
-    private fun setProducerUp(): () -> Unit =
-        {
-            Runtime.getRuntime().addShutdownHook(
-                Thread {
-                    producer.close()
-                },
-            )
-
-            logger.info("Starting application producer.")
-
-            var current: Long = 0
-            while (true) {
-                try {
-                    logger.info("Sending random message.")
-                    producer
-                        .send(
-                            ProducerRecord(
-                                /* topic = */ inputTopic,
-                                /* key = */ "key-${(current++ % 7)}",
-                                /* value = */ enumValues<MessageType>().random().name,
-                            ),
-                        ).get(10_000, TimeUnit.MILLISECONDS)
-                    logger.info("Sent random message $current.")
-                    sleep(5000)
-                } catch (t: Throwable) {
-                    logger.warn("Unable to produce record.", t)
-                    sleep(10_000)
-                }
-            }
-        }
 
     private fun setConsumerUp(): () -> Unit {
         Runtime.getRuntime().addShutdownHook(
@@ -116,26 +68,29 @@ class ExampleKafkaApplication(
                 consumer
                     .poll(Duration.ofMillis(5000))
                     .forEach { record ->
-                        if (store.get(record.key()) != null) {
+                        val key = record.key()
+                        val value = record.value()
+
+                        if (store.get(key) != null) {
                             throw RetryException(
-                                key = record.key(),
-                                value = record.value(),
+                                key = key,
+                                value = value,
                             )
                         }
-                        logger.info("Consuming message key: ${record.key()} value: ${record.value()}.")
-                        when (MessageType.valueOf(record.value())) {
-                            MessageType.SUCCESSFUL -> logger.info("Message successful.")
-                            MessageType.RETRY -> {
+                        logger.info("Consuming message key: $key value: $value.")
+                        when (ExampleKafkaMessage.MessageType.valueOf(value)) {
+                            ExampleKafkaMessage.MessageType.SUCCESSFUL -> logger.info("Message successful.")
+                            ExampleKafkaMessage.MessageType.RETRY -> {
                                 throw RetryException(
-                                    key = record.key(),
-                                    value = record.value(),
+                                    key = key,
+                                    value = value,
                                 )
                             }
-                            MessageType.FAIL_FOREVER -> {
+                            ExampleKafkaMessage.MessageType.FAIL_FOREVER -> {
                                 logger.info("Failed.")
                                 throw RetryException(
-                                    key = record.key(),
-                                    value = record.value(),
+                                    key = key,
+                                    value = value,
                                 )
                             }
                         }
@@ -149,6 +104,7 @@ class ExampleKafkaApplication(
                     /* key = */ retryException.key,
                     /* value = */ retryException.value,
                 )
+
                 producerRecord.headers().apply {
                     add("retry-count", 0.toString().toByteArray())
                     add("operation", DeadLetterCommandType.PUT.name.toByteArray())
