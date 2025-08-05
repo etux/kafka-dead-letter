@@ -2,24 +2,19 @@ package org.etux.kafka.deadletter
 
 import org.apache.kafka.streams.processor.api.Processor
 import org.apache.kafka.streams.processor.api.ProcessorContext
-import org.apache.kafka.streams.processor.api.ProcessorSupplier
 import org.apache.kafka.streams.processor.api.Record
 import org.apache.kafka.streams.state.KeyValueStore
+import org.etux.kafka.deadletter.statestore.DeadLetteredMessage
+import org.etux.kafka.deadletter.topic.DeadLetterMessageType
 
-class DeadLetterProcessorSupplier(private val storeName: String) : ProcessorSupplier<String, String, String, List<DeadLetterMessage>> {
-    override fun get(): Processor<String, String, String, List<DeadLetterMessage>> {
-        return DeadLetterProcessor(storeName)
-    }
-}
+class DeadLetterProcessor(private val storeName: String): Processor<String, String, String, List<DeadLetteredMessage<String>>> {
 
-class DeadLetterProcessor(private val storeName: String): Processor<String, String, String, List<DeadLetterMessage>> {
+    private lateinit var processorContext: ProcessorContext<String, List<DeadLetteredMessage<String>>>
+    private lateinit var keyValueStore: KeyValueStore<String, List<DeadLetteredMessage<String>>>
 
-    private lateinit var processorContext: ProcessorContext<String, List<DeadLetterMessage>>
-    private lateinit var keyValueStore: KeyValueStore<String, List<DeadLetterMessage>>
-
-    override fun init(context: ProcessorContext<String, List<DeadLetterMessage>>?) {
+    override fun init(context: ProcessorContext<String, List<DeadLetteredMessage<String>>>?) {
         this.processorContext = context ?: throw IllegalArgumentException("ProcessorContext cannot be null")
-        this.keyValueStore = context.getStateStore(storeName) as KeyValueStore<String, List<DeadLetterMessage>>
+        this.keyValueStore = context.getStateStore(storeName) as KeyValueStore<String, List<DeadLetteredMessage<String>>>
     }
 
     override fun process(record: Record<String, String>) {
@@ -30,13 +25,8 @@ class DeadLetterProcessor(private val storeName: String): Processor<String, Stri
         val operation = headers.lastHeader("operation")
             ?.value()
             ?.toString(Charsets.UTF_8)
-            ?.let { DeadLetterCommandType.valueOf(it) }
+            ?.let { DeadLetterMessageType.valueOf(it) }
             ?: throw IllegalArgumentException("Header 'operation' is missing")
-
-        val retryCount = headers.lastHeader("retry-count")
-            ?.value()
-            ?.toString(Charsets.UTF_8)
-            ?.toIntOrNull()
 
         val uniqueMessageId = headers.lastHeader("unique-message-id")
             ?.value()
@@ -45,51 +35,64 @@ class DeadLetterProcessor(private val storeName: String): Processor<String, Stri
 
         val deadLetteredMessagesForKey = keyValueStore.get(key)
 
-        val newValue = when (operation) {
-            DeadLetterCommandType.PUT -> {
+        when (operation) {
+            DeadLetterMessageType.PUT -> {
                 when (deadLetteredMessagesForKey) {
-                    null -> listOf(DeadLetterMessage(
-                        retryCount = 0,
-                        uniqueMessageId = uniqueMessageId,
-                        message = value,
-                    ))
-                    else -> deadLetteredMessagesForKey + DeadLetterMessage(
-                        retryCount = 0,
-                        uniqueMessageId = uniqueMessageId,
-                        message = value,
+                    null -> listOf(
+                        DeadLetteredMessage(
+                            retryCount = 0,
+                            uniqueMessageId = uniqueMessageId,
+                            payload = value,
+                        )
                     )
-
+                    else -> deadLetteredMessagesForKey + DeadLetteredMessage(
+                        retryCount = 0,
+                        uniqueMessageId = uniqueMessageId,
+                        payload = value,
+                    )
+                }.also {
+                    keyValueStore.put(
+                        /* key = */ key,
+                        /* value = */ it,
+                    )
                 }
             }
 
-            DeadLetterCommandType.DELETE -> {
+            DeadLetterMessageType.DELETE -> {
                 when (deadLetteredMessagesForKey) {
-                    null -> throw IllegalStateException("Key $key does not exist in the store.")
-                    else -> deadLetteredMessagesForKey.filterNot { it.uniqueMessageId == uniqueMessageId }
-
+                    null -> throw IllegalStateException("Key $key does not exist in the store. Requested operation: DELETE")
+                    else -> deadLetteredMessagesForKey
+                        .filterNot { it.uniqueMessageId == uniqueMessageId }
+                        .also {
+                            if (it.isEmpty()) {
+                                keyValueStore.delete(key)
+                            }
+                        }
                 }
             }
 
-            DeadLetterCommandType.RETRY -> {
+            DeadLetterMessageType.RETRY -> {
                 when (deadLetteredMessagesForKey) {
-                    null -> throw IllegalStateException("Key $key does not exist in the store.")
-                    else -> deadLetteredMessagesForKey.map {
-                        if (it.uniqueMessageId == uniqueMessageId) {
-                            it.copy(retryCount = (it.retryCount + 1))
-                        } else {
-                            it
+                    null -> throw IllegalStateException("Key $key does not exist in the store. Requested operation: RETRY")
+                    else -> {
+                        deadLetteredMessagesForKey.map {
+                            if (it.uniqueMessageId == uniqueMessageId) {
+                                it.copy(retryCount = (it.retryCount + 1))
+                            } else {
+                                it
+                            }
+                        }.also {
+                            keyValueStore.put(
+                                /* key = */ key,
+                                /* value = */ it,
+                            )
                         }
                     }
                 }
+
             }
         }
 
-        keyValueStore.put(/* key = */ record.key(), /* value = */ newValue)
+        processorContext.commit()
     }
 }
-
-data class DeadLetterMessage(
-    val retryCount: Int,
-    val uniqueMessageId: String,
-    val message: String, // ByteArray
-)

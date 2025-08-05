@@ -10,26 +10,24 @@ import org.apache.kafka.streams.state.KeyValueStore
 import org.apache.kafka.streams.state.StoreBuilder
 import org.apache.kafka.streams.state.Stores
 import org.etux.kafka.ExampleKafkaMessage
-import org.etux.kafka.serdes.DeadLetterMessageListSerde
-import org.etux.kafka.serdes.DeadLetterMessageSerde
+import org.etux.kafka.deadletter.statestore.DeadLetteredMessage
+import org.etux.kafka.deadletter.statestore.DeadLetteredMessageListSerde
 import org.slf4j.LoggerFactory
 import java.util.Properties
 
-class DeadLetterStream(
+class DeadLetteringStream(
     private val inputTopic: String,
     private val inputStore: String,
-    private val properties: Properties,
 ) {
+    val topology: Topology by lazy { createTopology() }
 
-    val topology: Topology by lazy { topology() }
-
-    private fun topology(): Topology {
+    private fun createTopology(): Topology {
         val builder = StreamsBuilder()
 
-        val storeBuilder: StoreBuilder<KeyValueStore<String, List<DeadLetterMessage>>> = Stores.keyValueStoreBuilder(
+        val storeBuilder: StoreBuilder<KeyValueStore<String, List<DeadLetteredMessage<String>>>> = Stores.keyValueStoreBuilder(
             /* supplier = */ Stores.inMemoryKeyValueStore(inputStore),
             /* keySerde = */ Serdes.String(),
-            /* valueSerde = */ DeadLetterMessageListSerde(),
+            /* valueSerde = */ DeadLetteredMessageListSerde(),
         )
         builder.addStateStore(storeBuilder)
 
@@ -43,12 +41,7 @@ class DeadLetterStream(
 
         deadLetterStream
             .peek { key, value -> logger.info("Received message. Key: $key, Value: $value") }
-            .filter { _, value ->
-                when (ExampleKafkaMessage.MessageType.valueOf(value)) {
-                    ExampleKafkaMessage.MessageType.SUCCESSFUL, ExampleKafkaMessage.MessageType.RETRY -> true
-                    else -> false
-                }
-            }.process(
+            .process(
                 /* processorSupplier = */ DeadLetterProcessorSupplier(inputStore),
                 /* ...stateStoreNames = */ inputStore,
             )
@@ -57,20 +50,7 @@ class DeadLetterStream(
         return builder.build()
     }
 
-    fun run() {
-        val streams = KafkaStreams(
-            /* topology = */ topology,
-            /* props = */ properties,
-        )
-
-        streams.start()
-
-        Runtime
-            .getRuntime()
-            .addShutdownHook(Thread { streams.close() })
-    }
-
     private companion object {
-        private val logger = LoggerFactory.getLogger(DeadLetterStream::class.java)
+        private val logger = LoggerFactory.getLogger(DeadLetteringStream::class.java)
     }
 }
