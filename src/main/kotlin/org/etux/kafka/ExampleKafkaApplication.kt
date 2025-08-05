@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory
 import java.lang.Thread.sleep
 import java.time.Duration
 import java.util.Properties
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -21,7 +22,7 @@ class ExampleKafkaApplication(
     private val inputTopic: String,
     private val deadLetterTopic: String,
     private val bootstrapServer: String,
-    private val store: ReadOnlyKeyValueStore<String, DeadLetterMessage>,
+    private val store: ReadOnlyKeyValueStore<String, List<DeadLetterMessage>>,
 ) {
     private val deadLetterProducerProperties: Properties by lazy {
         Properties().apply {
@@ -71,12 +72,17 @@ class ExampleKafkaApplication(
                         val key = record.key()
                         val value = record.value()
 
-                        if (store.get(key) != null) {
+                        // TODO: add feature flag
+
+                        if (store.get(key) != null) { // delta
                             throw RetryException(
                                 key = key,
                                 value = value,
                             )
+                        } else { // absolute
+
                         }
+
                         logger.info("Consuming message key: $key value: $value.")
                         when (ExampleKafkaMessage.MessageType.valueOf(value)) {
                             ExampleKafkaMessage.MessageType.SUCCESSFUL -> logger.info("Message successful.")
@@ -108,6 +114,7 @@ class ExampleKafkaApplication(
                 producerRecord.headers().apply {
                     add("retry-count", 0.toString().toByteArray())
                     add("operation", DeadLetterCommandType.PUT.name.toByteArray())
+                    add("unique-message-id", UUID.randomUUID().toString().toByteArray())
                 }
 
                 deadLetterProducer.send(producerRecord).get(5000, TimeUnit.MILLISECONDS)

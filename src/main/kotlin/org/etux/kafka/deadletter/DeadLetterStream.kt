@@ -10,6 +10,7 @@ import org.apache.kafka.streams.state.KeyValueStore
 import org.apache.kafka.streams.state.StoreBuilder
 import org.apache.kafka.streams.state.Stores
 import org.etux.kafka.ExampleKafkaMessage
+import org.etux.kafka.serdes.DeadLetterMessageListSerde
 import org.etux.kafka.serdes.DeadLetterMessageSerde
 import org.slf4j.LoggerFactory
 import java.util.Properties
@@ -25,10 +26,10 @@ class DeadLetterStream(
     private fun topology(): Topology {
         val builder = StreamsBuilder()
 
-        val storeBuilder: StoreBuilder<KeyValueStore<String, DeadLetterMessage>> = Stores.keyValueStoreBuilder(
+        val storeBuilder: StoreBuilder<KeyValueStore<String, List<DeadLetterMessage>>> = Stores.keyValueStoreBuilder(
             /* supplier = */ Stores.inMemoryKeyValueStore(inputStore),
             /* keySerde = */ Serdes.String(),
-            /* valueSerde = */ DeadLetterMessageSerde(),
+            /* valueSerde = */ DeadLetterMessageListSerde(),
         )
         builder.addStateStore(storeBuilder)
 
