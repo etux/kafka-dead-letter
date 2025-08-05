@@ -3,7 +3,6 @@ package org.etux.kafka
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.consumer.ConsumerRecords
 import org.apache.kafka.clients.consumer.KafkaConsumer
-import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore
 import org.etux.kafka.deadletter.statestore.DeadLetteredMessage
@@ -19,7 +18,6 @@ class ExampleConsumerThatIsAbleToDeadLetter<K, V>(
     private val processingMode: ProcessingMode,
     private val deadLetterStateStore: ReadOnlyKeyValueStore<K, List<DeadLetteredMessage<V>>>,
     private val deadLetterProducer: DeadLetterProducer<K, V>,
-    private val deadLetterTopic: String,
     private val businessLogic: (V) -> Boolean,
 ): KafkaConsumer<K, V>(Properties().apply {
     put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
@@ -31,7 +29,7 @@ class ExampleConsumerThatIsAbleToDeadLetter<K, V>(
 
     private val logger = LoggerFactory.getLogger(ExampleConsumerThatIsAbleToDeadLetter::class.java)
 
-    override fun poll(timeout: Duration): ConsumerRecords<K, V> {
+    override fun poll(timeout: Duration): ConsumerRecords<K, V> { // TODO figure out if this is the best way
         val poll = super.poll(timeout)
 
         poll.forEach { record ->
@@ -41,38 +39,26 @@ class ExampleConsumerThatIsAbleToDeadLetter<K, V>(
             if (processingMode == ProcessingMode.DELTA && deadLetterStateStore.get(key) != null) {
                 logger.info("Dead-letter state store contains message with key: '$key' and value: '$value'. Appending to dead-letter.")
 
-                publishDeadLetter(
+                deadLetterProducer.publishDeadLetter(
                     key = key,
                     value = value,
+                    operation = DeadLetterMessageType.PUT,
+                    uniqueMessageId = UUID.randomUUID().toString(),
                 )
             }
 
-            if (!businessLogic(value)) {
-                logger.warn("Message with key: $key and value: $value failed processing, sending to dead-letter topic.")
+            if (!businessLogic(value)) { // TODO: potential race condition for ABSOLUTE mode
+                logger.warn("Message with key: '$key' and value: '$value' failed processing, sending to dead-letter topic.")
 
-                publishDeadLetter(
+                deadLetterProducer.publishDeadLetter(
                     key = key,
                     value = value,
+                    operation = DeadLetterMessageType.PUT,
+                    uniqueMessageId = UUID.randomUUID().toString(),
                 )
             }
         }
 
         return poll
-    }
-
-    // TODO: refactor outside so it can be reused
-    private fun publishDeadLetter(key: K, value: V) {
-        val producerRecord = ProducerRecord(
-            /* topic = */ deadLetterTopic,
-            /* key = */ key,
-            /* value = */ value,
-        )
-
-        producerRecord.headers().apply {
-            add("operation", DeadLetterMessageType.PUT.name.toByteArray())
-            add("unique-message-id", UUID.randomUUID().toString().toByteArray())
-        }
-
-        deadLetterProducer.send(producerRecord)
     }
 }

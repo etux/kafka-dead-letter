@@ -68,29 +68,11 @@ fun main() {
         )
     )
 
-    val businessLogic: (String) -> Boolean = { message ->
-        logger.info("Business logic running for message: $message")
-
-        when (ExampleKafkaMessage.MessageType.valueOf(message)) {
-            ExampleKafkaMessage.MessageType.SUCCESSFUL -> {
-                logger.info("Message processed successfully: $message")
-                true
-            }
-            ExampleKafkaMessage.MessageType.RETRY -> {
-                logger.warn("Message requires retry: $message")
-                false
-            }
-            ExampleKafkaMessage.MessageType.FAIL_FOREVER -> {
-                logger.error("Message failed permanently: $message")
-                false
-            }
-        }
-    }
-
     val deadLetterProducer = DeadLetterProducer<String, String>(
         bootstrapServer = bootstrapServer,
         keySerializer = StringSerializer(),
-        valueSerializer = StringSerializer()
+        valueSerializer = StringSerializer(),
+        deadLetterTopic = deadLetterTopic,
     )
 
     val deadLetterReprocessor = DeadLetterReprocessor(
@@ -98,7 +80,6 @@ fun main() {
         deadLetterStateStore = deadLetterStateStore,
         periodInSeconds = 1L,
         deadLetterProducer = deadLetterProducer,
-        deadLetterTopic = deadLetterTopic,
     ) { message ->
         when (ExampleKafkaMessage.MessageType.valueOf(message)) {
             ExampleKafkaMessage.MessageType.SUCCESSFUL -> {
@@ -117,13 +98,28 @@ fun main() {
     }
 
     val exampleConsumerThatIsAbleToDeadLetter = ExampleConsumerThatIsAbleToDeadLetter(
+        processingMode = processingMode,
         bootstrapServer = bootstrapServer,
         deadLetterProducer = deadLetterProducer,
-        deadLetterTopic = deadLetterTopic,
-        businessLogic = businessLogic,
-        processingMode = processingMode,
         deadLetterStateStore = deadLetterStateStore
-    )
+    ) { message ->
+        logger.info("Business logic running for message: $message")
+
+        when (ExampleKafkaMessage.MessageType.valueOf(message)) {
+            ExampleKafkaMessage.MessageType.SUCCESSFUL -> {
+                logger.info("Message processed successfully: $message")
+                true
+            }
+            ExampleKafkaMessage.MessageType.RETRY -> {
+                logger.warn("Message requires retry: $message")
+                false
+            }
+            ExampleKafkaMessage.MessageType.FAIL_FOREVER -> {
+                logger.error("Message failed permanently: $message")
+                false
+            }
+        }
+    }
 
     val exampleKafkaApplication = ExampleKafkaApplication(
         inputTopic = topic,
@@ -131,7 +127,6 @@ fun main() {
     )
 
     Executors.newScheduledThreadPool(3).also {
-//        it.submit(deadLetteringStream::run)
         it.submit(deadLetterReprocessor::run)
         it.submit(exampleKafkaApplication::run)
     }
