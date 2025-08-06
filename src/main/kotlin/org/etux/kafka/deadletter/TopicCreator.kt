@@ -1,4 +1,4 @@
-package org.etux.kafka
+package org.etux.kafka.deadletter
 
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.AdminClientConfig

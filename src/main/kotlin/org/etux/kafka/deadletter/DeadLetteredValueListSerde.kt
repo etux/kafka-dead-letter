@@ -1,4 +1,4 @@
-package org.etux.kafka.deadletter.statestore
+package org.etux.kafka.deadletter
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
@@ -7,16 +7,16 @@ import org.apache.kafka.common.serialization.Deserializer
 import org.apache.kafka.common.serialization.Serde
 import org.apache.kafka.common.serialization.Serializer
 
-class DeadLetteredMessageListSerde<T> : Serde<List<DeadLetteredMessage<T>>> {
+class DeadLetteredValueListSerde<V> : Serde<List<DeadLetteredValue<V>>> {
     private val objectMapper = ObjectMapper().apply {
         registerModule(KotlinModule.Builder().build())
     }
 
-    override fun serializer() =  Serializer<List<DeadLetteredMessage<T>>> { _, data ->
+    override fun serializer() =  Serializer<List<DeadLetteredValue<V>>> { _, data ->
         objectMapper.writeValueAsBytes(data)
     }
 
     override fun deserializer() = Deserializer { _, bytes ->
-        objectMapper.readValue<List<DeadLetteredMessage<T>>>(bytes)
+        objectMapper.readValue<List<DeadLetteredValue<V>>>(bytes)
     }
 }
