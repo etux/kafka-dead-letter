@@ -110,20 +110,13 @@ class DeadLetterProcessor<K, V>(
     private fun reprocess(keyValue: KeyValue<K, List<DeadLetteredValue<V>>>) {
         val key = keyValue.key
         val messages = keyValue.value
-        val skippedMessageLogTemplate =
-            "Skipping reprocessing of message with key: '{}' and value: '{}' due to max retry attempts reached."
 
         when (processingMode) {
             Mode.ORDERED -> {
                 val firstMessage = messages.firstOrNull()
 
                 firstMessage?.let {
-                    if (it.retryCount >= maxRetries) {
-                        logger.info(skippedMessageLogTemplate, key, it)
-                        return@let
-                    }
-
-                    process(
+                    reprocessSingle(
                         key = key,
                         message = firstMessage,
                         messages = messages
@@ -132,12 +125,7 @@ class DeadLetterProcessor<K, V>(
             }
             Mode.UNORDERED -> {
                 messages.forEach { message ->
-                    if (message.retryCount >= maxRetries) {
-                        logger.info(skippedMessageLogTemplate, key, message)
-                        return@forEach
-                    }
-
-                    process(
+                    reprocessSingle(
                         key = key,
                         message = message,
                         messages = messages
@@ -147,16 +135,21 @@ class DeadLetterProcessor<K, V>(
         }
     }
 
-    private fun process(
+    private fun reprocessSingle(
         key: K,
         message: DeadLetteredValue<V>,
         messages: List<DeadLetteredValue<V>>,
     ) {
+        if (message.retryCount >= maxRetries) {
+            logger.info("Skipping reprocessing of dead-lettered message with key: '$key' and value: '$message' due to max retry attempts reached")
+            return
+        }
+
         logger.info("Reprocessing dead-lettered message with key: '$key' and value: '$message'")
 
         try {
             businessLogic(key, message.payload)
-            logger.info("Successfully reprocessed message with key: '${key}' and value: '${message}'")
+            logger.info("Successfully reprocessed dead-lettered message with key: '${key}' and value: '${message}'")
 
             keyValueStore.put(
                 /* key = */ key,
@@ -166,7 +159,7 @@ class DeadLetterProcessor<K, V>(
             )
         } catch (runtimeException: RuntimeException) {
             logger.error(
-                "Failed to reprocess message with key: '$key' and value: '${message.payload}'",
+                "Failed to reprocess dead-lettered message with key: '$key' and value: '${message.payload}'",
                 runtimeException
             )
 
