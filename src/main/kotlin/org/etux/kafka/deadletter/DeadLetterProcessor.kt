@@ -9,13 +9,14 @@ import org.apache.kafka.streams.state.KeyValueStore
 import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.UUID
+import kotlin.time.measureTimedValue
 
 class DeadLetterProcessor<K, V>(
     private val deadLetterStoreName: String,
     private val reprocessIntervalInSeconds: Long,
     private val maxRetries: Int,
     private val processingMode: Mode,
-    private val businessLogic: (key: K, value: V) -> Unit,
+    private val businessLogic: (key: K, value: V, headers: Map<String, String>) -> Unit,
 ): Processor<K, V, K, List<DeadLetteredValue<V>>> {
 
     enum class Mode {
@@ -24,27 +25,34 @@ class DeadLetterProcessor<K, V>(
     }
 
     private lateinit var processorContext: ProcessorContext<K, List<DeadLetteredValue<V>>>
-    private lateinit var keyValueStore: KeyValueStore<K, List<DeadLetteredValue<V>>>
+    private lateinit var stateStore: KeyValueStore<K, List<DeadLetteredValue<V>>>
     private val logger = LoggerFactory.getLogger(DeadLetterProcessor::class.java)
 
     override fun init(context: ProcessorContext<K, List<DeadLetteredValue<V>>>?) {
         processorContext = context ?: throw IllegalArgumentException("ProcessorContext cannot be null")
-        keyValueStore = context.getStateStore(deadLetterStoreName) as KeyValueStore<K, List<DeadLetteredValue<V>>>
+        stateStore = context.getStateStore(deadLetterStoreName)
 
         processorContext.schedule(
             /* interval = */ Duration.ofSeconds(reprocessIntervalInSeconds),
             /* type = */ PunctuationType.WALL_CLOCK_TIME)
         { _ ->
-            keyValueStore.all().forEach(::reprocess)
+            stateStore.all().forEach(::reprocess)
         }
     }
 
     override fun process(record: Record<K, V>) {
         val key = record.key()
         val value = record.value()
+        val headers = record.headers().associate {
+            it.key().toString() to it.value().decodeToString()
+        }
         val uniqueMessageId = UUID.randomUUID()
 
-        val deadLetteredMessagesForKey = keyValueStore.get(key)
+        val (deadLetteredMessagesForKey, timeTaken) = measureTimedValue {
+            stateStore.get(key)
+        }
+        logger.info("Retrieved dead-lettered messages for key '$key' in ${timeTaken.inWholeMicroseconds} microseconds")
+
 
         if (deadLetteredMessagesForKey != null) {
             logger.info("Dead-lettered messages found for key '$key': '$deadLetteredMessagesForKey'")
@@ -54,6 +62,8 @@ class DeadLetterProcessor<K, V>(
                     uniqueMessageId = uniqueMessageId,
                     value = value,
                     key = key,
+                    cause = "Message with same key already dead-lettered and processing mode is '$processingMode'",
+                    headers = headers
                 )
 
                 logger.info("Message with key '$key' and value '$value' added to dead-letter store with unique ID '$uniqueMessageId'. Will not process further.")
@@ -66,14 +76,18 @@ class DeadLetterProcessor<K, V>(
         try {
             businessLogic(
                 record.key(),
-                record.value()
+                record.value(),
+                headers
             )
         } catch (runtimeException: RuntimeException) {
             addDeadLetter(
                 deadLetteredMessagesForKey = deadLetteredMessagesForKey,
                 uniqueMessageId = uniqueMessageId,
                 value = value,
-                key = key
+                key = key,
+                cause = runtimeException.message,
+                stackTrace = runtimeException.stackTraceToString(),
+                headers = headers
             )
         }
         processorContext.commit()
@@ -82,25 +96,26 @@ class DeadLetterProcessor<K, V>(
     private fun addDeadLetter(
         deadLetteredMessagesForKey: List<DeadLetteredValue<V>>?,
         uniqueMessageId: UUID,
+        key: K,
         value: V,
-        key: K
+        cause: String? = null,
+        stackTrace: String? = null,
+        headers: Map<String, String> = emptyMap(),
     ) {
-        when (deadLetteredMessagesForKey) {
-            null -> listOf(
-                DeadLetteredValue(
-                    retryCount = 0,
-                    uniqueMessageId = uniqueMessageId,
-                    payload = value,
-                )
-            )
+        val newDeadLetterValue = DeadLetteredValue(
+            retryCount = 1,
+            uniqueMessageId = uniqueMessageId,
+            payload = value,
+            cause = cause,
+            stackTrace = stackTrace,
+            headers = headers,
+        )
 
-            else -> deadLetteredMessagesForKey + DeadLetteredValue(
-                retryCount = 0,
-                uniqueMessageId = uniqueMessageId,
-                payload = value,
-            )
+        when (deadLetteredMessagesForKey) {
+            null -> listOf(newDeadLetterValue)
+            else -> deadLetteredMessagesForKey + newDeadLetterValue
         }.also {
-            keyValueStore.put(
+            stateStore.put(
                 /* key = */ key,
                 /* value = */ it,
             )
@@ -116,6 +131,7 @@ class DeadLetterProcessor<K, V>(
                 val firstMessage = messages.firstOrNull()
 
                 firstMessage?.let {
+                    logger.info("Reprocessing dead-lettered messages from state store '${stateStore.name()}' for key: '$key' in order")
                     reprocessSingle(
                         key = key,
                         message = firstMessage,
@@ -124,6 +140,7 @@ class DeadLetterProcessor<K, V>(
                 }
             }
             Mode.UNORDERED -> {
+                logger.info("Reprocessing dead-lettered messages from state store '${stateStore.name()}' for key: '$key' out of order")
                 messages.forEach { message ->
                     reprocessSingle(
                         key = key,
@@ -148,10 +165,10 @@ class DeadLetterProcessor<K, V>(
         logger.info("Reprocessing dead-lettered message with key: '$key' and value: '$message'")
 
         try {
-            businessLogic(key, message.payload)
+            businessLogic(key, message.payload, message.headers)
             logger.info("Successfully reprocessed dead-lettered message with key: '${key}' and value: '${message}'")
 
-            keyValueStore.put(
+            stateStore.put(
                 /* key = */ key,
                 /* value = */ messages.filter { otherMessage ->
                     otherMessage.uniqueMessageId != message.uniqueMessageId
@@ -163,7 +180,7 @@ class DeadLetterProcessor<K, V>(
                 runtimeException
             )
 
-            keyValueStore.put(
+            stateStore.put(
                 /* key = */ key,
                 /* value = */ messages.map { otherMessage ->
                     if (otherMessage.uniqueMessageId == message.uniqueMessageId) {

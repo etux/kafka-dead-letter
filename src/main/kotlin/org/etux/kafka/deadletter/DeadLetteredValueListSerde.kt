@@ -6,8 +6,9 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import org.apache.kafka.common.serialization.Deserializer
 import org.apache.kafka.common.serialization.Serde
 import org.apache.kafka.common.serialization.Serializer
+import java.io.Serializable
 
-class DeadLetteredValueListSerde<V> : Serde<List<DeadLetteredValue<V>>> {
+class DeadLetteredValueListSerde<V> : Serde<List<DeadLetteredValue<V>>> where V : Serializable {
     private val objectMapper = ObjectMapper().apply {
         registerModule(KotlinModule.Builder().build())
     }

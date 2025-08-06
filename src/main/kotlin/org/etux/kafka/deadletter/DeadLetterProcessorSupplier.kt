@@ -7,7 +7,7 @@ class DeadLetterProcessorSupplier<K, V>(
     private val deadLetterStoreName: String,
     private val reprocessIntervalInSeconds: Long,
     private val processingMode: DeadLetterProcessor.Mode,
-    private val businessLogic: (key: K, value: V) -> Unit,
+    private val businessLogic: (key: K, value: V, headers: Map<String, String>) -> Unit,
 ) :
     ProcessorSupplier<K, V, K, List<DeadLetteredValue<V>>> {
     override fun get(): Processor<K, V, K, List<DeadLetteredValue<V>>> {

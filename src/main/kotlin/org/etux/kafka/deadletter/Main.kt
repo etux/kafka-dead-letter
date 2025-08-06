@@ -1,5 +1,6 @@
 package org.etux.kafka.deadletter
 
+import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.common.serialization.Serdes
 import org.apache.kafka.streams.KafkaStreams
 import org.apache.kafka.streams.StreamsConfig
@@ -19,8 +20,6 @@ enum class MessageType {
 fun main() {
     val bootstrapServer = "localhost:9092"
     val topic = "my-topic"
-    val deadLetterStoreName = "$topic-dead-letter-state-store"
-    val processingMode = DeadLetterProcessor.Mode.UNORDERED
 
     TopicCreator(
         bootstrapServer = bootstrapServer,
@@ -34,12 +33,15 @@ fun main() {
             put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().javaClass.name)
             put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().javaClass.name)
             put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 30_000)
+            put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest")
         },
         topicName = topic,
-        deadLetterStoreName = deadLetterStoreName,
+        deadLetterStoreName = "$topic-dead-letter-state-store",
         reprocessIntervalInSeconds = 5L,
-        processingMode = processingMode,
-    ) { key, value ->
+        processingMode = DeadLetterProcessor.Mode.ORDERED,
+        keySerde = Serdes.String(),
+        valueSerde = Serdes.String(),
+    ) { key, value, _ ->
         logger.info("Business logic executing for message with key: '$key' and value: '$value'")
 
         val type = MessageType.valueOf(value)
