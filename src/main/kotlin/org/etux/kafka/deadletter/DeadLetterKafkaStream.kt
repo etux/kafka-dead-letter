@@ -8,6 +8,7 @@ import org.apache.kafka.streams.state.Stores
 import org.slf4j.LoggerFactory
 import java.io.Serializable
 import java.util.Properties
+import java.util.UUID
 
 class DeadLetterKafkaStream<K, V>(
     private val properties: Properties,
@@ -17,6 +18,7 @@ class DeadLetterKafkaStream<K, V>(
     private val processingMode: DeadLetterProcessor.Mode,
     private val keySerde: Serde<K>,
     private val valueSerde: Serde<V>,
+    private val deleteDeadLetteredMessagesWithIds: Set<UUID>,
     private val businessLogic: (key: K, value: V, headers: Map<String, String>) -> Unit,
 ) where K: Any, V: Serializable {
     private val logger = LoggerFactory.getLogger(DeadLetterKafkaStream::class.java)
@@ -45,6 +47,7 @@ class DeadLetterKafkaStream<K, V>(
                 reprocessIntervalInSeconds = reprocessIntervalInSeconds,
                 processingMode = processingMode,
                 businessLogic = businessLogic,
+                deleteDeadLetteredMessagesWithIds = deleteDeadLetteredMessagesWithIds,
             ),
             /* ...stateStoreNames = */ deadLetterStoreName,
         )

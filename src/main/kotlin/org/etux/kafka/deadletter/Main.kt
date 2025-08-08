@@ -6,6 +6,7 @@ import org.apache.kafka.streams.KafkaStreams
 import org.apache.kafka.streams.StreamsConfig
 import org.slf4j.LoggerFactory
 import java.util.Properties
+import java.util.UUID
 import java.util.concurrent.Executors
 
 private const val APPLICATION_ID = "my-application"
@@ -41,6 +42,7 @@ fun main() {
         processingMode = DeadLetterProcessor.Mode.ORDERED,
         keySerde = Serdes.String(),
         valueSerde = Serdes.String(),
+        deleteDeadLetteredMessagesWithIds = setOf(UUID.fromString("87011856-9b9e-442f-af16-d75116195590")),
     ) { key, value, _ ->
         logger.info("Business logic executing for message with key: '$key' and value: '$value'")
 
